@@ -35,8 +35,9 @@ routing decision live.
 | Frontend | Next.js 16 (App Router) + TypeScript + Tailwind v4 + shadcn/ui |
 | LLM SDK | Vercel AI SDK 6 (`ai` + `@ai-sdk/groq` + `@ai-sdk/react`) |
 | Models | `openai/gpt-oss-120b` (classifier, structured outputs) + `llama-3.3-70b-versatile` (streaming chat) |
+| Database | Neon Postgres (via Vercel Storage) + Drizzle ORM |
 | Hosting | Vercel (Hobby) |
-| Runtime | Edge |
+| Runtime | Node (for cookies + neon-http driver) |
 
 Everything in this stack is free for the demo footprint.
 
@@ -75,12 +76,20 @@ human handoff and asks for name + contract number + short description.
 git clone <repo-url>
 cd evollis-support
 npm install
-echo "GROQ_API_KEY=gsk_..." > .env.local
+
+# Required env vars in .env.local:
+#   GROQ_API_KEY=gsk_...                  # free: https://console.groq.com/keys
+#   DATABASE_URL=postgresql://...         # free: Vercel Dashboard -> Storage -> Neon
+
+# Push the Drizzle schema to your DB the first time
+npx drizzle-kit push
+
 npm run dev
 ```
 
-Then open <http://localhost:3000>. Get a free Groq API key at
-<https://console.groq.com/keys> (no credit card required).
+Then open <http://localhost:3000>. Conversations are stored in Postgres, keyed
+by an anonymous `evollis_session` cookie, so refreshing the page restores your
+chat. Click **New chat** to wipe and start fresh.
 
 ---
 

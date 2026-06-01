@@ -1,7 +1,7 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, type UIMessage } from "ai";
 import { useState, useRef, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,9 +20,10 @@ type Meta = { category?: string; language?: string; reason?: string };
 export default function Home() {
   const [meta, setMeta] = useState<Meta>({});
   const [input, setInput] = useState("");
+  const [hydrated, setHydrated] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const { messages, sendMessage, status } = useChat({
+  const { messages, sendMessage, setMessages, status } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (url, init) => {
@@ -41,8 +42,32 @@ export default function Home() {
 
   const isLoading = status === "submitted" || status === "streaming";
 
+  // Hydrate from server-side history on mount.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/history", { cache: "no-store" });
+        const data = (await res.json()) as { messages: UIMessage[] };
+        if (!cancelled && Array.isArray(data.messages) && data.messages.length) {
+          setMessages(data.messages);
+        }
+      } catch {
+        // history is optional; ignore failures
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [setMessages]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({
+      top: scrollRef.current.scrollHeight,
+      behavior: "smooth",
+    });
   }, [messages]);
 
   const send = (text: string) => {
@@ -50,6 +75,14 @@ export default function Home() {
     if (!t || isLoading) return;
     sendMessage({ text: t });
     setInput("");
+  };
+
+  const clear = async () => {
+    try {
+      await fetch("/api/history", { method: "DELETE" });
+    } catch {}
+    setMessages([]);
+    setMeta({});
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -61,19 +94,35 @@ export default function Home() {
     <main className="min-h-screen bg-gradient-to-b from-background to-muted/40">
       <div className="mx-auto max-w-2xl px-4 py-6 sm:py-10 space-y-6">
         <header className="space-y-2">
-          <div className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-lg bg-foreground text-background grid place-items-center font-bold">
-              E
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="h-8 w-8 rounded-lg bg-foreground text-background grid place-items-center font-bold">
+                E
+              </div>
+              <h1 className="text-2xl font-semibold tracking-tight">
+                Evollis Support
+              </h1>
             </div>
-            <h1 className="text-2xl font-semibold tracking-tight">Evollis Support</h1>
+            {messages.length > 0 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={clear}
+                disabled={isLoading}
+              >
+                New chat
+              </Button>
+            )}
           </div>
           <p className="text-sm text-muted-foreground">
-            First-line customer-support agent — billing, technical issues, contract life, and orders.
-            Auto-detects your language.
+            First-line customer-support agent — billing, technical issues,
+            contract life, and orders. Auto-detects your language and remembers
+            your conversation.
           </p>
         </header>
 
-        {messages.length === 0 && (
+        {hydrated && messages.length === 0 && (
           <Card className="p-4 space-y-3">
             <p className="text-sm font-medium">Try a question:</p>
             <div className="grid gap-2">
@@ -91,10 +140,15 @@ export default function Home() {
           </Card>
         )}
 
-        <div ref={scrollRef} className="space-y-3 max-h-[55vh] overflow-y-auto pr-1">
+        <div
+          ref={scrollRef}
+          className="space-y-3 max-h-[55vh] overflow-y-auto pr-1"
+        >
           {messages.map((m) => {
             const text = m.parts
-              .filter((p): p is { type: "text"; text: string } => p.type === "text")
+              .filter(
+                (p): p is { type: "text"; text: string } => p.type === "text",
+              )
               .map((p) => p.text)
               .join("");
             return (
@@ -105,7 +159,9 @@ export default function Home() {
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
                   {m.role === "user" ? "You" : "Evollis agent"}
                 </div>
-                <div className="whitespace-pre-wrap text-sm leading-relaxed">{text}</div>
+                <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                  {text}
+                </div>
               </Card>
             );
           })}
@@ -121,7 +177,9 @@ export default function Home() {
             <Badge variant="secondary">category: {meta.category}</Badge>
             <Badge variant="outline">language: {meta.language}</Badge>
             {meta.reason && (
-              <span className="text-xs text-muted-foreground">— {meta.reason}</span>
+              <span className="text-xs text-muted-foreground">
+                — {meta.reason}
+              </span>
             )}
           </div>
         )}
@@ -140,8 +198,9 @@ export default function Home() {
         </form>
 
         <footer className="text-[11px] text-muted-foreground pt-4 border-t">
-          Demo project — public information about Evollis only. Not affiliated with Evollis.
-          Built with Next.js + Vercel AI SDK + Groq (Llama&nbsp;3.3&nbsp;70B).
+          Demo project — public information about Evollis only. Not affiliated
+          with Evollis. Built with Next.js + Vercel AI SDK + Groq (Llama&nbsp;3.3&nbsp;70B)
+          + Vercel Postgres / Drizzle.
         </footer>
       </div>
     </main>

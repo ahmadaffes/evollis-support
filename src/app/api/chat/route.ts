@@ -1,10 +1,23 @@
-import { streamText, convertToModelMessages, generateObject, type UIMessage } from "ai";
+import {
+  streamText,
+  convertToModelMessages,
+  generateObject,
+  type UIMessage,
+} from "ai";
 import { groq } from "@ai-sdk/groq";
 import { z } from "zod";
+import { eq } from "drizzle-orm";
+import { cookies } from "next/headers";
 import { EVOLLIS_CONTEXT } from "@/lib/evollis-kb";
+import { db } from "@/db";
+import { conversations, messages as messagesTable } from "@/db/schema";
 
-export const runtime = "edge";
+// Note: not edge — neon-http + cookies() are most reliable on Node runtime.
+export const runtime = "nodejs";
 export const maxDuration = 30;
+
+const SESSION_COOKIE = "evollis_session";
+const ONE_YEAR = 60 * 60 * 24 * 365;
 
 const CATEGORY_PROMPTS: Record<string, string> = {
   facturation:
@@ -40,8 +53,29 @@ const ClassifySchema = z.object({
   reasoning: z.string().max(280),
 });
 
+async function getOrCreateConversation(sessionId: string) {
+  const existing = await db.query.conversations.findFirst({
+    where: eq(conversations.sessionId, sessionId),
+  });
+  if (existing) return existing;
+  const [created] = await db
+    .insert(conversations)
+    .values({ sessionId })
+    .returning();
+  return created;
+}
+
 export async function POST(req: Request) {
   const { messages } = (await req.json()) as { messages: UIMessage[] };
+
+  // Session cookie (anonymous)
+  const cookieStore = await cookies();
+  let sessionId = cookieStore.get(SESSION_COOKIE)?.value;
+  let setCookieHeader: string | undefined;
+  if (!sessionId) {
+    sessionId = crypto.randomUUID();
+    setCookieHeader = `${SESSION_COOKIE}=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${ONE_YEAR}`;
+  }
 
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const lastUserText =
@@ -50,8 +84,7 @@ export async function POST(req: Request) {
       .map((p) => p.text)
       .join("\n") ?? "";
 
-  // 1) Classify intent + detect language. If the classifier ever returns
-  // malformed JSON, fall back to a safe default so the chat still responds.
+  // 1) Classify intent + detect language. Fail-safe to "autre" if Groq misbehaves.
   let meta: z.infer<typeof ClassifySchema>;
   try {
     const r = await generateObject({
@@ -75,7 +108,25 @@ export async function POST(req: Request) {
     };
   }
 
-  // 2) Stream the answer with a category-aware system prompt
+  // Persist user message (best-effort; never block the response).
+  const convoPromise = getOrCreateConversation(sessionId)
+    .then(async (convo) => {
+      await db.insert(messagesTable).values({
+        conversationId: convo.id,
+        role: "user",
+        content: lastUserText,
+        category: meta.category,
+        language: meta.language,
+        reasoning: meta.reasoning,
+      });
+      return convo;
+    })
+    .catch((err) => {
+      console.error("[db] failed to persist user message:", err);
+      return null;
+    });
+
+  // 2) Stream the answer
   const result = streamText({
     model: groq("llama-3.3-70b-versatile"),
     system: [
@@ -94,6 +145,21 @@ export async function POST(req: Request) {
       "- Never make up a refund amount, a contract clause, a phone number, or an email.",
     ].join("\n"),
     messages: await convertToModelMessages(messages),
+    onFinish: async ({ text }) => {
+      const convo = await convoPromise;
+      if (!convo) return;
+      try {
+        await db.insert(messagesTable).values({
+          conversationId: convo.id,
+          role: "assistant",
+          content: text,
+          category: meta.category,
+          language: meta.language,
+        });
+      } catch (err) {
+        console.error("[db] failed to persist assistant message:", err);
+      }
+    },
   });
 
   return result.toUIMessageStreamResponse({
@@ -101,6 +167,7 @@ export async function POST(req: Request) {
       "x-category": meta.category,
       "x-language": meta.language,
       "x-reason": encodeURIComponent(meta.reasoning),
+      ...(setCookieHeader ? { "Set-Cookie": setCookieHeader } : {}),
     },
   });
 }
