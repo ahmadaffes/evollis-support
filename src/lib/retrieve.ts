@@ -183,9 +183,11 @@ export async function retrieveContext(
 ): Promise<RetrievedChunk[]> {
   if (!query.trim()) return [];
 
-  // 1. HyDE
+  // 1. HyDE. We concatenate the hypothetical with the original query so the
+  // user's literal keywords (product names, article numbers, etc.) stay in the
+  // embedding while the hypothetical adds contract-domain vocabulary.
   const hypothetical = await hypothesise(query);
-  const embedInput = hypothetical ?? query;
+  const embedInput = hypothetical ? `${query}\n\n${hypothetical}` : query;
 
   // 2. Embed
   let vector: number[];
@@ -210,9 +212,9 @@ export async function retrieveContext(
   const reranked = await rerankCandidates(query, candidates, k);
   const finalList = reranked ?? candidates.slice(0, k);
 
-  // 5. Threshold filter — different thresholds depending on whether rerank ran.
-  //    rerank relevance_score is 0..1 with ~0.25 being a sane "useful" cutoff.
-  //    cosine similarity threshold stays at the previous 0.35 for fallback.
-  const threshold = reranked ? 0.25 : 0.35;
+  // 5. Threshold filter. Empirically rerank-2.5-lite scores irrelevant chunks
+  //    around 0.29-0.31 on weather/joke queries, so 0.35 cleanly cuts those
+  //    out while keeping real matches (which score 0.43+ on contract queries).
+  const threshold = 0.35;
   return finalList.filter((r) => r.similarity > threshold);
 }
