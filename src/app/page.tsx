@@ -15,7 +15,52 @@ const EXAMPLES = [
   "Where is my order?",
 ];
 
-type Meta = { category?: string; language?: string; reason?: string };
+type Source = { n: number; title: string; url: string; similarity: number };
+type Meta = {
+  category?: string;
+  language?: string;
+  reason?: string;
+  sources?: Source[];
+};
+
+// Replace [1], [2], [1][3] etc. with superscript links to the corresponding source.
+function renderWithCitations(
+  text: string,
+  sources: Source[] | undefined,
+  role: string,
+): React.ReactNode {
+  if (role !== "assistant" || !sources || sources.length === 0) return text;
+  const byN = new Map(sources.map((s) => [s.n, s]));
+  const parts: React.ReactNode[] = [];
+  const regex = /\[(\d+)\]/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    const n = Number(match[1]);
+    const src = byN.get(n);
+    if (src) {
+      parts.push(
+        <a
+          key={`c${key++}`}
+          href={src.url}
+          target="_blank"
+          rel="noreferrer noopener"
+          title={src.title}
+          className="ml-0.5 text-blue-600 hover:underline align-super text-[10px] font-medium"
+        >
+          [{n}]
+        </a>,
+      );
+    } else {
+      parts.push(match[0]);
+    }
+    last = regex.lastIndex;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
 
 export default function Home() {
   const [meta, setMeta] = useState<Meta>({});
@@ -28,12 +73,20 @@ export default function Home() {
       api: "/api/chat",
       fetch: async (url, init) => {
         const res = await fetch(url, init);
+        let sources: Source[] | undefined;
+        const rawSources = res.headers.get("x-sources");
+        if (rawSources) {
+          try {
+            sources = JSON.parse(decodeURIComponent(rawSources)) as Source[];
+          } catch {}
+        }
         setMeta({
           category: res.headers.get("x-category") ?? undefined,
           language: res.headers.get("x-language") ?? undefined,
           reason: res.headers.get("x-reason")
             ? decodeURIComponent(res.headers.get("x-reason") as string)
             : undefined,
+          sources,
         });
         return res;
       },
@@ -160,7 +213,7 @@ export default function Home() {
                   {m.role === "user" ? "You" : "Evollis agent"}
                 </div>
                 <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                  {text}
+                  {renderWithCitations(text, meta.sources, m.role)}
                 </div>
               </Card>
             );
@@ -182,6 +235,34 @@ export default function Home() {
               </span>
             )}
           </div>
+        )}
+
+        {meta.sources && meta.sources.length > 0 && (
+          <Card className="p-3 space-y-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Sources
+            </p>
+            <ol className="text-xs space-y-1">
+              {meta.sources.map((s) => (
+                <li key={s.n} className="flex gap-2">
+                  <span className="text-muted-foreground tabular-nums">
+                    [{s.n}]
+                  </span>
+                  <a
+                    href={s.url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="text-blue-600 hover:underline"
+                  >
+                    {s.title}
+                  </a>
+                  <span className="text-muted-foreground">
+                    · sim {s.similarity.toFixed(2)}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </Card>
         )}
 
         <form onSubmit={handleSubmit} className="flex gap-2 sticky bottom-2">

@@ -11,6 +11,7 @@ import { cookies } from "next/headers";
 import { EVOLLIS_CONTEXT } from "@/lib/evollis-kb";
 import { db } from "@/db";
 import { conversations, messages as messagesTable } from "@/db/schema";
+import { retrieveContext, type RetrievedChunk } from "@/lib/retrieve";
 
 // Note: not edge — neon-http + cookies() are most reliable on Node runtime.
 export const runtime = "nodejs";
@@ -108,6 +109,15 @@ export async function POST(req: Request) {
     };
   }
 
+  // 1b) Retrieve top-k chunks from the T&C corpus. Runs in parallel with DB writes.
+  const retrievalPromise: Promise<RetrievedChunk[]> = retrieveContext(
+    lastUserText,
+    4,
+  ).catch((err) => {
+    console.error("[retrieve] failed:", err);
+    return [];
+  });
+
   // Persist user message (best-effort; never block the response).
   const convoPromise = getOrCreateConversation(sessionId)
     .then(async (convo) => {
@@ -126,7 +136,19 @@ export async function POST(req: Request) {
       return null;
     });
 
-  // 2) Stream the answer
+  // 2) Wait for retrieval, build sources block.
+  const retrieved = await retrievalPromise;
+  const sourcesBlock = retrieved.length
+    ? "RETRIEVED EXCERPTS (cite as [1], [2], … when you use them):\n\n" +
+      retrieved
+        .map(
+          (c, i) =>
+            `[${i + 1}] (${c.sourceTitle}, similarity ${c.similarity.toFixed(2)})\n${c.content}`,
+        )
+        .join("\n\n---\n\n")
+    : "NO RETRIEVED EXCERPTS — do not cite. If the user asks for a specific clause/number, say you don't know and escalate.";
+
+  // 3) Stream the answer
   const result = streamText({
     model: groq("llama-3.3-70b-versatile"),
     system: [
@@ -138,11 +160,15 @@ export async function POST(req: Request) {
       "",
       `Category guidance: ${CATEGORY_PROMPTS[meta.category]}`,
       "",
+      sourcesBlock,
+      "",
       "STYLE RULES:",
       `- Reply in the same language as the user's last message (${meta.language}).`,
       "- Be concise: 3–6 sentences. No marketing fluff.",
-      "- If you are not sure of a fact, say so plainly and offer human escalation.",
-      "- Never make up a refund amount, a contract clause, a phone number, or an email.",
+      "- When you use information from a retrieved excerpt, cite the number(s) inline like [1] or [1][3]. Cite at the end of the sentence.",
+      "- Only cite a number that appears in the RETRIEVED EXCERPTS above. Never invent citations.",
+      "- If the answer is not supported by the excerpts AND not part of the general Evollis context above, say you don't know and offer human escalation.",
+      "- Never make up a refund amount, a specific clause, a phone number, or an email.",
     ].join("\n"),
     messages: await convertToModelMessages(messages),
     onFinish: async ({ text }) => {
@@ -162,11 +188,24 @@ export async function POST(req: Request) {
     },
   });
 
+  // Encode citations into a single header. Keep it compact.
+  const sourcesHeader = encodeURIComponent(
+    JSON.stringify(
+      retrieved.map((c, i) => ({
+        n: i + 1,
+        title: c.sourceTitle,
+        url: c.sourceUrl,
+        similarity: Number(c.similarity.toFixed(2)),
+      })),
+    ),
+  );
+
   return result.toUIMessageStreamResponse({
     headers: {
       "x-category": meta.category,
       "x-language": meta.language,
       "x-reason": encodeURIComponent(meta.reasoning),
+      "x-sources": sourcesHeader,
       ...(setCookieHeader ? { "Set-Cookie": setCookieHeader } : {}),
     },
   });
