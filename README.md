@@ -3,8 +3,8 @@
 A working first-line customer-support agent for **Evollis** (French Device-as-a-Service company).
 Built as a 24-hour interview deliverable.
 
-> **Live demo:** _(URL will appear here after Vercel deploy)_
-> **Repo:** _(URL will appear here after `gh repo create`)_
+> **Live demo:** <https://evollis-support-sooty.vercel.app/>
+> **Repo:** <https://github.com/ahmadaffes/evollis-support>
 
 ---
 
