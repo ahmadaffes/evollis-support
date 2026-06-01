@@ -12,7 +12,7 @@ export type RetrievedChunk = {
   similarity: number; // 0..1, higher = closer
 };
 
-async function embedQuery(text: string): Promise<number[]> {
+async function embedQueryOnce(text: string): Promise<number[]> {
   const key = process.env.VOYAGE_API_KEY;
   if (!key) throw new Error("VOYAGE_API_KEY missing");
   const res = await fetch("https://api.voyageai.com/v1/embeddings", {
@@ -27,9 +27,27 @@ async function embedQuery(text: string): Promise<number[]> {
       input_type: "query",
     }),
   });
+  if (res.status === 429) throw new Error("RATE_LIMIT");
   if (!res.ok) throw new Error(`Voyage ${res.status}: ${await res.text()}`);
   const data = (await res.json()) as { data: { embedding: number[] }[] };
   return data.data[0]!.embedding;
+}
+
+async function embedQuery(text: string): Promise<number[]> {
+  // Retry-with-backoff on 429s. Voyage free tier is 3 RPM; in burst traffic
+  // we occasionally trip it. Two retries (3s, 9s) buys us back without
+  // making the user-visible turn feel slow.
+  const backoffs = [3000, 9000];
+  for (let attempt = 0; attempt <= backoffs.length; attempt++) {
+    try {
+      return await embedQueryOnce(text);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg !== "RATE_LIMIT" || attempt === backoffs.length) throw err;
+      await new Promise((r) => setTimeout(r, backoffs[attempt]));
+    }
+  }
+  throw new Error("unreachable");
 }
 
 /**
