@@ -174,9 +174,15 @@ export async function POST(req: Request) {
         .join("\n\n---\n\n")
     : "NO RETRIEVED EXCERPTS — do not cite. If the user asks for a specific clause/number, say you don't know and escalate.";
 
-  // 3) Stream the answer
+  // 3) Stream the answer.
+  // We use llama-3.1-8b-instant on Groq because (a) it has the largest
+  // free-tier daily-token bucket (500K TPD vs. 100K for 70b-versatile),
+  // making the live demo robust to a single Evollis-interview session
+  // without quota exhaustion, and (b) for the constrained 3–6-sentence
+  // answers we generate, the 8B model is more than adequate. Production
+  // would route through llama-3.3-70b-versatile (or a paid tier).
   const result = streamText({
-    model: groq("llama-3.3-70b-versatile"),
+    model: groq("llama-3.1-8b-instant"),
     system: [
       INJECTION_DEFENSE_RULES,
       "",
